@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torch
 from torch.autograd import Variable
 
-from model import SimpleLSTM
+from model import BiLSTM
 
 import random
 random.seed(0)
@@ -36,16 +36,23 @@ def tokenizer(text):
     return wakati
 
 TEXT = data.Field(sequential=True, tokenize=sptokenizer, lower=True)
-LABEL = data.Field(sequential=False, use_vocab=False)
+LABEL = data.Field(sequential=False)
 
 dataset = data.TabularDataset(path='text/sent.csv', format='csv', fields=[('text', TEXT), ('label', LABEL)], skip_header=True)
 train, val, test = dataset.split(split_ratio=[0.7, 0.1, 0.2], random_state=random.getstate())
 #print (len(train), len(val), len(test))
-TEXT.build_vocab(train)
+TEXT.build_vocab(train, val, test)
+LABEL.build_vocab(train, val, test)
 
-device = torch.device('cuda:0')
-train_it, val_it, test_it = data.BucketIterator.splits((train, val, test), batch_sizes=(16,16,1), device=device, sort_key=lambda x: len(x.text), repeat=False, sort=False)
+bsize = 8
+gpu = False
+device = 'cpu'
+if gpu and torch.cuda.is_available:
+    device = torch.device('cuda:1')
 
+train_it, valid_it, test_it = data.BucketIterator.splits((train, val, test), batch_sizes=(bsize,bsize,bsize), device=device, sort_key=lambda x: len(x.text), repeat=False)
+
+'''
 class batch_wrapper:
     def __init__(self, dl, x, y):
         self.dl, self.x, self.y = dl, x, y
@@ -55,53 +62,75 @@ class batch_wrapper:
         for batch in self.dl:
             X = getattr(batch, self.x) #assuming one input
             y = getattr(batch, self.y)
-            '''
-            if self.y is not None: #concat the y into single tensor
-                y = torch.cat([getattr(batch, feat).unsqueeze(1) for feat in self.y], dim=1).float()
-            else:
-                y = torch.zeros((1))
-            '''
             yield (X,y)
 
 
 train_batch_it = batch_wrapper(train_it, 'text', 'label')
 #print ('get data x and y out of batch object:', next(iter(train_batch_it)))
 valid_batch_it = batch_wrapper(valid_it, 'text', 'label')
+
 test_batch_it = batch_wrapper(test_it, 'text')
 
-    
-
-'''
 batch = next(iter(train_it))
 print (batch)
 print (batch.text)
 print (batch.label)
 print (len(train_it))
 '''
+
+def get_accuracy(truth, pred):
+    assert len(truth) == len(pred)
+    right = 0
+    for i in range(len(truth)):
+        if truth[i] == pred[i]:
+            right += 1.0
+    return right / len(truth)
+
+def train(model, train_it, lossf, optimizer):
+    model.train()
+    avg_loss = 0.0
+    truth_res, pred_res = [], []
+    count = 0
+    for batch in train_it:
+        sent, label = batch.text, batch.label
+        label.data.sub_(1)
+        truth_res += list(label.data)
+        #model.hidden = model.init_hidden()
+        pred = model(sent)
+        pred_label = pred.data.cpu().max(1)[1].numpy()
+        pred_res += [x for x in pred_label]
+        model.zero_grad()
+        #print ('PRED:', pred)
+        #print ('LABEL:', label)
+        
+        loss = lossf(pred, label)
+        avg_loss += loss.item()
+        count += 1
+        loss.backward()
+        optimizer.step()
+    avg_loss /= len(train_it)
+    acc = get_accuracy(truth_res, pred_res)
+    return avg_loss, acc
+    
+
 vocab_size = len(TEXT.vocab)
 emb_dim = 50
 hidden_dim = 50
 out_dim = 2
 lr = 1e-2
-model = SimpleLSTM(vocab_size, hidden_dim, emb_dim, 0.2)
-model.cuda()
+dropout = 0.2
+model = BiLSTM(vocab_size, hidden_dim, emb_dim, out_dim, bsize, dropout, gpu=gpu)
+if gpu:
+    model.cuda()
 
 import tqdm
-opt = optim.Adam(model.parameters(), lr=lr)
-loss = F.cross_entropy()
+optimizer = optim.Adam(model.parameters(), lr=lr)
+lossf = nn.NLLLoss()
 ep = 5
+train_loss = []
+valid_loss = []
 
-for ep in range(1, ep+1):
-    tr_loss = 0.0
-    model.train()
-    for x, y in tqdm.tqdm(train_batch_it):
-        opt.zero_grad()
-        preds = model(x)
-        loss = criterion(preds,y)
-        loss.backward()
-        opt.step()
-        
-    
-
-
+for epoch in range(ep):
+    avg_loss,acc = train(model, train_it, lossf, optimizer)
+    tqdm.write('Train: loss %.2f acc %.1f' % (avg_loss, acc*100))
 
