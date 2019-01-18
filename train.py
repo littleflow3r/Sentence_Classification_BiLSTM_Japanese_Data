@@ -1,5 +1,5 @@
 #coding:utf-8
-
+import sys
 import torchtext
 from torchtext import data, datasets
 
@@ -43,8 +43,9 @@ train, val, test = dataset.split(split_ratio=[0.7, 0.1, 0.2], random_state=rando
 #print (len(train), len(val), len(test))
 TEXT.build_vocab(train, val, test)
 LABEL.build_vocab(train, val, test)
+#print (LABEL.vocab.freqs.most_common(10))
 
-bsize = 8
+bsize = 4
 gpu = False
 device = 'cpu'
 if gpu and torch.cuda.is_available:
@@ -53,23 +54,15 @@ if gpu and torch.cuda.is_available:
 train_it, valid_it, test_it = data.BucketIterator.splits((train, val, test), batch_sizes=(bsize,bsize,bsize), device=device, sort_key=lambda x: len(x.text), repeat=False)
 
 '''
-class batch_wrapper:
-    def __init__(self, dl, x, y):
-        self.dl, self.x, self.y = dl, x, y
-    def __len__(self):
-        return len(self.dl)
-    def __iter__(self):
-        for batch in self.dl:
-            X = getattr(batch, self.x) #assuming one input
-            y = getattr(batch, self.y)
-            yield (X,y)
+for b in train_it:
+    #print (b.text, b.label)
+    print (b.label.data) is same as 
+    print (b.label)
+    sys.exit()
 
-
-train_batch_it = batch_wrapper(train_it, 'text', 'label')
-#print ('get data x and y out of batch object:', next(iter(train_batch_it)))
-valid_batch_it = batch_wrapper(valid_it, 'text', 'label')
-
-test_batch_it = batch_wrapper(test_it, 'text')
+#is same as 
+for idb, batch in enumerate(train_it):
+    print (batch.text, '####', batch.label)
 
 batch = next(iter(train_it))
 print (batch)
@@ -93,8 +86,8 @@ def train(model, train_it, lossf, optimizer):
     count = 0
     for batch in train_it:
         sent, label = batch.text, batch.label
-        label.data.sub_(1)
-        truth_res += list(label.data)
+        label.sub_(1) #substract with 1, because the label tensor using index where index 1=value 0, 2=1
+        truth_res += list(label.cpu().numpy())
         #model.hidden = model.init_hidden()
         pred = model(sent)
         pred_label = pred.data.cpu().max(1)[1].numpy()
@@ -108,6 +101,7 @@ def train(model, train_it, lossf, optimizer):
         count += 1
         loss.backward()
         optimizer.step()
+    #print ('truth pred', truth_res, pred_res)
     avg_loss /= len(train_it)
     acc = get_accuracy(truth_res, pred_res)
     return avg_loss, acc
@@ -134,3 +128,32 @@ for epoch in range(ep):
     avg_loss,acc = train(model, train_it, lossf, optimizer)
     tqdm.write('Train: loss %.2f acc %.1f' % (avg_loss, acc*100))
 
+'''
+for epoch in range(1, ep+1):
+    t_loss = 0.0
+    model.train()
+    for x, y in tqdm.tqdm(train_batch_it):
+        optimizer.zero_grad()
+        pred = model(x)
+        pred = pred.data.cpu().max(1)[1]
+        print ('PRED:', pred)
+        print ('LABEL:', y)
+        loss = lossf(pred, y)
+        import sys
+        sys.exit()
+        loss.backward()
+        opt.step()
+        t_loss += loss.item() * x.size(0)
+    epoch_loss = t_loss/ len(train)
+    v_loss = 0.0
+    model.eval()
+    for x,y in valid_batch_it:
+        pred = model(x)
+        pred_label = pred.data.cpu().max(1)[1].numpy()
+        loss = lossf(pred_label,y)
+        val_loss += loss.item() * x.size(0)
+    val_loss /= len(valid)
+    train_loss.append(epoch_loss)
+    valid_loss.append(val_loss)
+    print ('Epoch: {}, Training loss: {:.4f}, Validation loss: {:.4f}'.format(epoch, epoch_loss, val_loss))
+'''
