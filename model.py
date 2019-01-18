@@ -30,6 +30,6 @@ class BiLSTM(nn.Module):
         out, hidden = self.encoder(emb, self.hidden)
         #last = (hidden[0, :, :] + hidden[1, :, :])
         y = self.hidden2label(out[-1])
-        log_probs = F.log_softmax(y, dim=2)
+        log_probs = F.log_softmax(y, dim=1)
         # last = out[:, :, :self.hidden_dim] + out[:, :, self.hidden_dim:]
         return log_probs
