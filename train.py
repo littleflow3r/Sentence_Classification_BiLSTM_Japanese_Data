@@ -36,20 +36,18 @@ def tokenizer(text):
     return wakati
 
 TEXT = data.Field(sequential=True, tokenize=sptokenizer, lower=True)
-LABEL = data.Field(sequential=False)
+LABEL = data.LabelField(dtype=torch.float)
 
 dataset = data.TabularDataset(path='text/sent.csv', format='csv', fields=[('text', TEXT), ('label', LABEL)], skip_header=True)
 train, val, test = dataset.split(split_ratio=[0.7, 0.1, 0.2], random_state=random.getstate())
 #print (len(train), len(val), len(test))
-TEXT.build_vocab(train, val, test)
-LABEL.build_vocab(train, val, test)
+TEXT.build_vocab(train)
+LABEL.build_vocab(train)
 #print (LABEL.vocab.freqs.most_common(10))
 
 bsize = 4
-gpu = False
-device = 'cpu'
-if gpu and torch.cuda.is_available:
-    device = torch.device('cuda:1')
+gpu = True
+device = torch.device('cuda' if gpu and torch.cuda.is_available() else 'cpu')
 
 train_it, valid_it, test_it = data.BucketIterator.splits((train, val, test), batch_sizes=(bsize,bsize,bsize), device=device, sort_key=lambda x: len(x.text), repeat=False)
 
@@ -71,89 +69,72 @@ print (batch.label)
 print (len(train_it))
 '''
 
-def get_accuracy(truth, pred):
-    assert len(truth) == len(pred)
-    right = 0
-    for i in range(len(truth)):
-        if truth[i] == pred[i]:
-            right += 1.0
-    return right / len(truth)
+def binary_accuracy(pred, label):
+    rounded_pred = torch.round(torch.sigmoid(pred))
+    correct = (rounded_pred == label).float()
+    acc = correct.sum() / len(correct) 
+    #print (correct, acc)
+    return acc
 
-def train(model, train_it, lossf, optimizer):
+def train(model, trainit, lossf, optimizer):
     model.train()
-    avg_loss = 0.0
-    truth_res, pred_res = [], []
-    count = 0
-    for batch in train_it:
+    epoch_loss = 0.0
+    epoch_acc = 0
+    for batch in trainit:
+        optimizer.zero_grad()
         sent, label = batch.text, batch.label
-        label.sub_(1) #substract with 1, because the label tensor using index where index 1=value 0, 2=1
-        truth_res += list(label.cpu().numpy())
-        #model.hidden = model.init_hidden()
-        pred = model(sent)
-        pred_label = pred.data.cpu().max(1)[1].numpy()
-        pred_res += [x for x in pred_label]
-        model.zero_grad()
-        #print ('PRED:', pred)
-        #print ('LABEL:', label)
-        
+        pred = model(sent).squeeze(1)
         loss = lossf(pred, label)
-        avg_loss += loss.item()
-        count += 1
+        acc = binary_accuracy(pred, label)
+        
         loss.backward()
         optimizer.step()
-    #print ('truth pred', truth_res, pred_res)
-    avg_loss /= len(train_it)
-    acc = get_accuracy(truth_res, pred_res)
-    return avg_loss, acc
+        epoch_loss += loss.item()
+        epoch_acc += acc.item()
+    return epoch_loss/ len(train_it), epoch_acc/ len(train_it)
+    
+def evaluate(model, it, lossf):
+    model.eval()
+    epoch_loss = 0
+    epoch_acc = 0
+    with torch.no_grad():
+        for batch in it:
+            sent, label = batch.text, batch.label
+            #print (sent, sent.squeeze(1))
+            pred = model(sent)
+            if len(batch) != 1:
+                pred = pred.squeeze(1)
+            loss = lossf(pred, label)
+            acc = binary_accuracy(pred, label)
+            epoch_loss += loss.item()
+            epoch_acc += acc.item()
+    return epoch_loss/ len(valid_it), epoch_acc/len(valid_it)
     
 
 vocab_size = len(TEXT.vocab)
 emb_dim = 50
 hidden_dim = 50
-out_dim = 2
+out_dim = 1
 lr = 1e-2
-dropout = 0.2
-model = BiLSTM(vocab_size, hidden_dim, emb_dim, out_dim, bsize, dropout, gpu=gpu)
-if gpu:
-    model.cuda()
+nlayers = 2
+bidir = True
+dropout = 0.5
+model = BiLSTM(vocab_size, hidden_dim, emb_dim, out_dim, bsize, nlayers, bidir, dropout, gpu=gpu)
 
-import tqdm
-optimizer = optim.Adam(model.parameters(), lr=lr)
-lossf = nn.NLLLoss()
+optimizer = optim.Adam(model.parameters()) #no need to specify LR for adam
+lossf = nn.BCEWithLogitsLoss()
 ep = 5
-train_loss = []
-valid_loss = []
+
+if gpu:
+    model.to(device)
+    lossf.to(device)
 
 for epoch in range(ep):
-    avg_loss,acc = train(model, train_it, lossf, optimizer)
-    tqdm.write('Train: loss %.2f acc %.1f' % (avg_loss, acc*100))
+    tr_loss, tr_acc = train(model, train_it, lossf, optimizer)
+    vl_loss, vl_acc = evaluate(model, valid_it, lossf)
+    print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
+    print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
+    te_loss, te_acc = evaluate(model, test_it, lossf)
+    print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
 
-'''
-for epoch in range(1, ep+1):
-    t_loss = 0.0
-    model.train()
-    for x, y in tqdm.tqdm(train_batch_it):
-        optimizer.zero_grad()
-        pred = model(x)
-        pred = pred.data.cpu().max(1)[1]
-        print ('PRED:', pred)
-        print ('LABEL:', y)
-        loss = lossf(pred, y)
-        import sys
-        sys.exit()
-        loss.backward()
-        opt.step()
-        t_loss += loss.item() * x.size(0)
-    epoch_loss = t_loss/ len(train)
-    v_loss = 0.0
-    model.eval()
-    for x,y in valid_batch_it:
-        pred = model(x)
-        pred_label = pred.data.cpu().max(1)[1].numpy()
-        loss = lossf(pred_label,y)
-        val_loss += loss.item() * x.size(0)
-    val_loss /= len(valid)
-    train_loss.append(epoch_loss)
-    valid_loss.append(val_loss)
-    print ('Epoch: {}, Training loss: {:.4f}, Validation loss: {:.4f}'.format(epoch, epoch_loss, val_loss))
-'''
+
