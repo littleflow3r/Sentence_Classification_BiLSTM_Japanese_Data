@@ -44,11 +44,18 @@ class CNN(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = x.permute(1,0)
-        embedded = self.embedding(x).unsqueeze(1)
+        #x = [sent len, batch size]
+        x = x.permute(1,0) #swap the axis, because cnn wants (batch, input)
+        #x = [batch size, sent len]
+        embedded = self.embedding(x) # [batch size, sent len, emb dim]
+        embedded = embedded.unsqueeze(1) # [batch size, 1, sent len, emb dim]
+#The second dimension of the input into a nn.Conv2d layer must be the channel dimension. As text technically does not have a channel dimension, we unsqueeze our tensor to create one. This matches with our in_channels=1 in the initialization of our convolutional layers
         conved = [F.relu(conv(embedded)).squeeze(3) for conv in self.convs]
-        pooled = [F.max_pool1d(conv, conv.shape[2]).squeeze(2) for conv in conved]
-        cat = self.dropout(torch.cat(pooled, dim=1))
-        return self.fc(cat)
+        #conv_n = [batch size, n_filters, sent len - filter_sizes[n]]
 
+        pooled = [F.max_pool1d(conv, conv.shape[2]).squeeze(2) for conv in conved]
+        #pooled_n = [batch size, n_filters]
+        cat = self.dropout(torch.cat(pooled, dim=1))
+        #cat = [batch size, n_filters * len(filter_sizes)]
+        return self.fc(cat)
         
