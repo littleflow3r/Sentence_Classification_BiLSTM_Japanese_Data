@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torch
 from torch.autograd import Variable
 
-from model import BiLSTM
+from model import BiLSTM, CNN
 
 import random
 random.seed(0)
@@ -102,8 +102,11 @@ def evaluate(model, it, lossf):
             sent, label = batch.text, batch.label
             #print (sent, sent.squeeze(1))
             pred = model(sent)
-            if len(batch) != 1:
+            if pred.dim() != label.dim():
                 pred = pred.squeeze(1)
+            
+            #if len(batch) != 1:
+            #    pred = pred.squeeze(1)
             loss = lossf(pred, label)
             acc = binary_accuracy(pred, label)
             epoch_loss += loss.item()
@@ -118,8 +121,12 @@ out_dim = 1
 lr = 1e-2
 nlayers = 2
 bidir = True
-dropout = 0.5
+dropout = 0.3
 model = BiLSTM(vocab_size, hidden_dim, emb_dim, out_dim, bsize, nlayers, bidir, dropout, gpu=gpu)
+
+n_filters = 50
+filter_sizes = [3,4,5]
+modelc = CNN(vocab_size, emb_dim, n_filters, filter_sizes, out_dim, dropout )
 
 optimizer = optim.Adam(model.parameters()) #no need to specify LR for adam
 lossf = nn.BCEWithLogitsLoss()
@@ -127,14 +134,22 @@ ep = 5
 
 if gpu:
     model.to(device)
+    modelc.to(device)
     lossf.to(device)
 
 for epoch in range(ep):
+    print ('BiLSTM....')
     tr_loss, tr_acc = train(model, train_it, lossf, optimizer)
-    vl_loss, vl_acc = evaluate(model, valid_it, lossf)
     print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
+    vl_loss, vl_acc = evaluate(model, valid_it, lossf)
     print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
     te_loss, te_acc = evaluate(model, test_it, lossf)
     print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
-
+    print ('CNN...') 
+    tr_loss, tr_acc = train(modelc, train_it, lossf, optimizer)
+    print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
+    vl_loss, vl_acc = evaluate(modelc, valid_it, lossf)
+    print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
+    te_loss, te_acc = evaluate(modelc, test_it, lossf)
+    print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
 
