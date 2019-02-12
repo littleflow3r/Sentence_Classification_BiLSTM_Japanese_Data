@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torch
 from torch.autograd import Variable
 
-from model import BiLSTM, CNN
+from model import BiLSTM, CNN, LSTMAttn
 
 import random
 random.seed(0)
@@ -18,7 +18,7 @@ torch.cuda.manual_seed(0)
 
 import sentencepiece as spm
 sp = spm.SentencePieceProcessor()
-sp.Load('../spiece/ja.wiki.bpe.vs5000.model')
+sp.Load('../../spiece/ja.wiki.bpe.vs5000.model')
 
 def sptokenizer(x):
     return sp.EncodeAsPieces(x)
@@ -27,7 +27,7 @@ import MeCab
 tagger = MeCab.Tagger('')
 tagger.parse('')
 
-def tokenizer(text):
+def mctokenizer(text):
     wakati = []
     node = tagger.parseToNode(text).next
     while node.next:
@@ -46,7 +46,7 @@ LABEL.build_vocab(train)
 #print (LABEL.vocab.freqs.most_common(10))
 
 bsize = 4
-gpu = True
+gpu = False
 device = torch.device('cuda' if gpu and torch.cuda.is_available() else 'cpu')
 
 train_it, valid_it, test_it = data.BucketIterator.splits((train, val, test), batch_sizes=(bsize,bsize,bsize), device=device, sort_key=lambda x: len(x.text), repeat=False)
@@ -84,6 +84,9 @@ def train(model, trainit, lossf, optimizer):
         optimizer.zero_grad()
         sent, label = batch.text, batch.label
         pred = model(sent).squeeze(1)
+        # print ('pred:', pred, pred.size())
+        # print ('label:', label, label.size())
+        # sys.exit()
         loss = lossf(pred, label)
         acc = binary_accuracy(pred, label)
         
@@ -104,7 +107,6 @@ def evaluate(model, it, lossf):
             pred = model(sent)
             if pred.dim() != label.dim():
                 pred = pred.squeeze(1)
-            
             #if len(batch) != 1:
             #    pred = pred.squeeze(1)
             loss = lossf(pred, label)
@@ -124,7 +126,7 @@ bidir = True
 dropout = 0.3
 model = BiLSTM(vocab_size, hidden_dim, emb_dim, out_dim, bsize, nlayers, bidir, dropout, gpu=gpu)
 
-n_filters = 50
+n_filters = 3
 filter_sizes = [3,4,5]
 modelc = CNN(vocab_size, emb_dim, n_filters, filter_sizes, out_dim, dropout )
 
@@ -132,24 +134,40 @@ optimizer = optim.Adam(model.parameters()) #no need to specify LR for adam
 lossf = nn.BCEWithLogitsLoss()
 ep = 5
 
-if gpu:
-    model.to(device)
-    modelc.to(device)
-    lossf.to(device)
+modelatt = LSTMAttn(vocab_size, hidden_dim, emb_dim, out_dim, bsize, gpu=gpu)
 
+if gpu:
+    #model.to(device)
+    #modelc.to(device)
+    modelatt.to(device)
+
+'''
 for epoch in range(ep):
     print ('BiLSTM....')
     tr_loss, tr_acc = train(model, train_it, lossf, optimizer)
     print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
     vl_loss, vl_acc = evaluate(model, valid_it, lossf)
     print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
-    te_loss, te_acc = evaluate(model, test_it, lossf)
-    print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
+
+te_loss, te_acc = evaluate(modelc, test_it, lossf)
+print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
+
+for epoch in range(ep):
     print ('CNN...') 
     tr_loss, tr_acc = train(modelc, train_it, lossf, optimizer)
     print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
     vl_loss, vl_acc = evaluate(modelc, valid_it, lossf)
     print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
-    te_loss, te_acc = evaluate(modelc, test_it, lossf)
-    print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
 
+te_loss, te_acc = evaluate(modelc, test_it, lossf)
+print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
+'''
+for epoch in range(ep):
+    print ('LSTM Attention...') 
+    tr_loss, tr_acc = train(modelatt, train_it, lossf, optimizer)
+    print('TRAIN: loss %.2f acc %.1f' % (tr_loss, tr_acc*100)) 
+    vl_loss, vl_acc = evaluate(modelatt, valid_it, lossf)
+    print('VALID: loss %.2f acc %.1f' % (vl_loss, vl_acc*100))
+
+te_loss, te_acc = evaluate(modelatt, test_it, lossf)
+print('TEST: loss %.2f acc %.1f' % (te_loss, te_acc*100))
