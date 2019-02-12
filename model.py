@@ -4,6 +4,37 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 
+class LSTMAttn(nn.Module):
+    def __init__(self, vocab_size, hidden_dim, emb_dim, out_dim, batch_size, gpu=True):
+        super().__init__()
+        self.gpu = gpu
+        self.batch_size = batch_size
+        self.hidden_dim = hidden_dim
+        self.vocab_size = vocab_size
+
+        self.embed = nn.Embedding(vocab_size, emb_dim)
+        self.encoder = nn.LSTM(emb_dim, hidden_dim)
+        self.fc = nn.Linear(hidden_dim, out_dim)
+    
+    def attn_net(self, lstm_out, final_state):
+        #lstm_out = final output of lstm which contains hidden layer outputs for each sequence
+        #final_state = final time-step hidden state of the lstm
+        hidden = final_state.squeeze(0)
+        attn_weights = torch.bmm(lstm_out, hidden.unsqueeze(2)).squeeze(2)
+        soft_attn_weights = F.softmax(attn_weights, 1)
+        new_hidden_state = torch.bmm(lstm_out.transpose(1,2), soft_attn_weights.unsqueeze(2)).squeeze(2)
+        return new_hidden_state
+
+    def forward(self, input_sent):
+        inputx = self.embed(input_sent)
+        #(h0, c0) = self.init_hidden()
+        #print (inputx.size())
+        output, (final_h_state, final_c_state) = self.encoder(inputx)
+        output = output.permute(1,0,2)
+        attn_output = self.attn_net(output, final_h_state)
+        logits = self.fc(attn_output)
+        return logits
+
 class BiLSTM(nn.Module):
     def __init__(self, vocab_size, hidden_dim, emb_dim, out_dim, batch_size, nlayers, bidir, dropout, gpu=True, vec=None):
         super().__init__()
@@ -27,7 +58,7 @@ class BiLSTM(nn.Module):
         return (h0, c0)
     
     def forward(self, seq):
-        self.hidden = self.init_hidden()
+        #self.hidden = self.init_hidden()
         emb = self.dropout(self.embed(seq))
         out, (hidden, cell) = self.encoder(emb)
         #last = out[-1] #same
